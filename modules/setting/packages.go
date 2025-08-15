@@ -44,6 +44,8 @@ var (
 		DefaultRPMSignEnabled     bool
 		RetainMavenSnapshotBuilds int
 		DebugMavenCleanup         bool
+		PruneMavenMetadataCron    bool
+		DebugMavenMetadataPrune   bool
 	}{
 		Enabled:                   true,
 		LimitTotalOwnerCount:      -1,
@@ -93,6 +95,8 @@ func loadPackagesFrom(rootCfg ConfigProvider) (err error) {
 	Packages.DefaultRPMSignEnabled = sec.Key("DEFAULT_RPM_SIGN_ENABLED").MustBool(false)
 	Packages.RetainMavenSnapshotBuilds = sec.Key("RETAIN_MAVEN_SNAPSHOT_BUILDS").MustInt(Packages.RetainMavenSnapshotBuilds)
 	Packages.DebugMavenCleanup = sec.Key("DEBUG_MAVEN_CLEANUP").MustBool(true)
+	Packages.PruneMavenMetadataCron = sec.Key("PRUNE_MAVEN_METADATA_CRON").MustBool(false)
+	Packages.DebugMavenMetadataPrune = sec.Key("DEBUG_MAVEN_METADATA_PRUNE").MustBool(false)
 	return nil
 }
 

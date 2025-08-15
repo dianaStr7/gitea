@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -249,7 +250,7 @@ func GetFilesBelowBuildNumber(ctx context.Context, versionID int64, maxBuildNumb
 
 	var filteredFiles, skippedFiles []*PackageFile
 	for _, file := range files {
-		buildNumber, err := extractBuildNumberFromFileName(file.Name, classifiers...)
+		buildNumber, err := extractBuildNumberFromFileName(file.Name, endings...)
 		if err != nil {
 			if !errors.Is(err, ErrMetadataFile) {
 				skippedFiles = append(skippedFiles, file)
@@ -269,32 +270,52 @@ func GetFilesBelowBuildNumber(ctx context.Context, versionID int64, maxBuildNumb
 //
 //	"artifact-1.0.0-20250311.083409-9.tgz" returns 9
 //	"artifact-to-test-2.0.0-20250311.083409-10-sources.tgz" returns 10
-func extractBuildNumberFromFileName(filename string, classifiers ...string) (int, error) {
+//
+// fileEndings: e.g. "-sources.tgz", "-javadoc.jar", etc.
+func extractBuildNumberFromFileName(filename string, fileEndings ...string) (int, error) {
 	if strings.Contains(filename, "maven-metadata.xml") {
 		return 0, ErrMetadataFile
 	}
 
-	dotIdx := strings.LastIndex(filename, ".")
-	if dotIdx == -1 {
-		return 0, fmt.Errorf("extract build number from filename: no file extension found in '%s'", filename)
+	// Sort file endings by length (longest first)
+	sortedEndings := make([]string, len(fileEndings))
+	copy(sortedEndings, fileEndings)
+	// Simple bubble sort for clarity, use sort.Slice in production
+	for i := 0; i < len(sortedEndings); i++ {
+		for j := i + 1; j < len(sortedEndings); j++ {
+			if len(sortedEndings[j]) > len(sortedEndings[i]) {
+				sortedEndings[i], sortedEndings[j] = sortedEndings[j], sortedEndings[i]
+			}
+		}
 	}
-	base := filename[:dotIdx]
 
-	// Remove classifier suffix if present.
-	for _, classifier := range classifiers {
-		suffix := "-" + classifier
-		if strings.HasSuffix(base, suffix) {
-			base = base[:len(base)-len(suffix)]
+	sort.SliceStable(classifiers, func(i, j int) bool {
+		return len(classifiers[i]) > len(classifiers[j])
+	})
+
+	// Remove file ending suffix if present (longest first)
+	for _, ending := range sortedEndings {
+		if strings.HasSuffix(filename, ending) {
+			filename = filename[:len(filename)-len(ending)]
+			break
+		}
+	}
+
+	// Remove checksum if present (e.g. ...-sha1.txt, ...-md5.txt)
+	checksumSuffixes := []string{"-sha1.txt", "-md5.txt", "-sha256.txt", "-sha512.txt"}
+	for _, cs := range checksumSuffixes {
+		if strings.HasSuffix(filename, cs) {
+			filename = filename[:len(filename)-len(cs)]
 			break
 		}
 	}
 
 	// The build number should be the token after the last dash.
-	lastDash := strings.LastIndex(base, "-")
+	lastDash := strings.LastIndex(filename, "-")
 	if lastDash == -1 {
 		return 0, fmt.Errorf("extract build number from filename: invalid file name format in '%s'", filename)
 	}
-	buildNumberStr := base[lastDash+1:]
+	buildNumberStr := filename[lastDash+1:]
 	buildNumber, err := strconv.Atoi(buildNumberStr)
 	if err != nil {
 		return 0, fmt.Errorf("extract build number from filename: failed to convert build number '%s' to integer in '%s': %v", buildNumberStr, filename, err)

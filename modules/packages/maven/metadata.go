@@ -5,9 +5,7 @@ package maven
 
 import (
 	"encoding/xml"
-	"errors"
 	"io"
-	"strconv"
 
 	"code.gitea.io/gitea/modules/util"
 	"code.gitea.io/gitea/modules/validation"
@@ -69,7 +67,8 @@ type pomStruct struct {
 	} `xml:"dependencies>dependency"`
 }
 
-type snapshotMetadataStruct struct {
+// SnapshotMetadataXML represents the raw XML structure of maven-metadata.xml for snapshots
+type SnapshotMetadataXML struct {
 	XMLName    xml.Name `xml:"metadata"`
 	GroupID    string   `xml:"groupId"`
 	ArtifactID string   `xml:"artifactId"`
@@ -138,9 +137,9 @@ func ParsePackageMetaData(r io.Reader) (*Metadata, error) {
 	}, nil
 }
 
-// ParseSnapshotVersionMetadata parses the Maven Snapshot Version metadata to extract the build number and list of available classifiers.
-func ParseSnapshotVersionMetaData(r io.Reader) (*SnapshotMetadata, error) {
-	var metadata snapshotMetadataStruct
+// ParseSnapshotVersionMetadataXML parses the raw XML structure of maven-metadata.xml
+func ParseSnapshotVersionMetadataXML(r io.Reader) (*SnapshotMetadataXML, error) {
+	var metadata SnapshotMetadataXML
 
 	dec := xml.NewDecoder(r)
 	dec.CharsetReader = charset.NewReaderLabel
@@ -148,20 +147,5 @@ func ParseSnapshotVersionMetaData(r io.Reader) (*SnapshotMetadata, error) {
 		return nil, err
 	}
 
-	buildNumber, err := strconv.Atoi(metadata.Versioning.Snapshot.BuildNumber)
-	if err != nil {
-		return nil, errors.New("invalid or missing build number in snapshot metadata")
-	}
-
-	var classifiers []string
-	for _, snapshotVersion := range metadata.Versioning.SnapshotVersions {
-		if snapshotVersion.Classifier != "" {
-			classifiers = append(classifiers, snapshotVersion.Classifier)
-		}
-	}
-
-	return &SnapshotMetadata{
-		BuildNumber: buildNumber,
-		Classifiers: classifiers,
-	}, nil
+	return &metadata, nil
 }

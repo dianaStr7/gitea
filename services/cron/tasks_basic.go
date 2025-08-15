@@ -17,6 +17,7 @@ import (
 	"code.gitea.io/gitea/services/migrations"
 	mirror_service "code.gitea.io/gitea/services/mirror"
 	packages_cleanup_service "code.gitea.io/gitea/services/packages/cleanup"
+	maven_service "code.gitea.io/gitea/services/packages/maven"
 	repo_service "code.gitea.io/gitea/services/repository"
 	archiver_service "code.gitea.io/gitea/services/repository/archiver"
 )
@@ -156,6 +157,26 @@ func registerCleanupPackages() {
 	})
 }
 
+func registerMavenSnapshotCleanup() {
+	RegisterTaskFatal("cleanup_maven_snapshots", &BaseConfig{
+		Enabled:    true,
+		RunAtStart: true,
+		Schedule:   "@midnight",
+	}, func(ctx context.Context, _ *user_model.User, _ Config) error {
+		return maven_service.CleanupSnapshotVersions(ctx)
+	})
+}
+
+func registerPruneMavenMetadata() {
+	RegisterTaskFatal("prune_maven_metadata", &BaseConfig{
+		Enabled:    setting.Packages.PruneMavenMetadataCron,
+		RunAtStart: false,
+		Schedule:   "@midnight",
+	}, func(ctx context.Context, _ *user_model.User, _ Config) error {
+		return maven_service.PruneAllMavenMetadata(ctx)
+	})
+}
+
 func registerSyncRepoLicenses() {
 	RegisterTaskFatal("sync_repo_licenses", &BaseConfig{
 		Enabled:    false,
@@ -181,6 +202,8 @@ func initBasicTasks() {
 	registerCleanupHookTaskTable()
 	if setting.Packages.Enabled {
 		registerCleanupPackages()
+		registerMavenSnapshotCleanup()
+		registerPruneMavenMetadata()
 	}
 	registerSyncRepoLicenses()
 }
