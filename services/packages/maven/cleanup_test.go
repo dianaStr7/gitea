@@ -5,11 +5,15 @@ package maven
 
 import (
 	"bytes"
+	"fmt"
+	"strings"
 	"testing"
 
 	"code.gitea.io/gitea/models/packages"
 	"code.gitea.io/gitea/models/unittest"
+	user_model "code.gitea.io/gitea/models/user"
 	packages_module "code.gitea.io/gitea/modules/packages"
+	"code.gitea.io/gitea/modules/packages/maven"
 	"code.gitea.io/gitea/modules/setting"
 	packages_service "code.gitea.io/gitea/services/packages"
 
@@ -20,15 +24,83 @@ func TestMain(m *testing.M) {
 	unittest.MainTest(m)
 }
 
+// createTestMavenSnapshotPackage creates a maven snapshot package with 11 artifact files
+// Files created:
+//   - 5 base jars: build 1-5
+//   - 6 classifier jars: sources + javadoc for builds 3, 4, 5
+func createTestMavenSnapshotPackage(t *testing.T) *packages.PackageVersion {
+	t.Helper()
+
+	owner := unittest.AssertExistsAndLoadBean(t, &user_model.User{ID: 2})
+
+	// Create the first file to establish the package + version
+	buf, err := packages_module.CreateHashedBufferFromReaderWithSize(
+		strings.NewReader("test-content-1"), 1024,
+	)
+	assert.NoError(t, err)
+	defer buf.Close()
+
+	pv, _, err := packages_service.CreatePackageAndAddFile(t.Context(), &packages_service.PackageCreationInfo{
+		PackageInfo: packages_service.PackageInfo{
+			Owner:       owner,
+			PackageType: packages.TypeMaven,
+			Name:        "com.gitea:test-project",
+			Version:     "1.0-SNAPSHOT",
+		},
+		Creator:          owner,
+		SemverCompatible: false,
+		Metadata: &maven.Metadata{
+			GroupID:    "com.gitea",
+			ArtifactID: "test-project",
+		},
+	}, &packages_service.PackageFileCreationInfo{
+		PackageFileInfo: packages_service.PackageFileInfo{
+			Filename: "gitea-test-1.0-20230101.000000-1.jar",
+		},
+		Creator: owner,
+		Data:    buf,
+		IsLead:  false,
+	})
+	assert.NoError(t, err)
+
+	// Define remaining files to add (builds 2-5 base jars + classifier jars)
+	additionalFiles := []string{
+		"gitea-test-1.0-20230101.000000-2.jar",
+		"gitea-test-1.0-20230101.000000-3.jar",
+		"gitea-test-1.0-20230101.000000-4.jar",
+		"gitea-test-1.0-20230101.000000-5.jar",
+		"gitea-test-1.0-20230101.000000-3-sources.jar",
+		"gitea-test-1.0-20230101.000000-3-javadoc.jar",
+		"gitea-test-1.0-20230101.000000-4-sources.jar",
+		"gitea-test-1.0-20230101.000000-4-javadoc.jar",
+		"gitea-test-1.0-20230101.000000-5-sources.jar",
+		"gitea-test-1.0-20230101.000000-5-javadoc.jar",
+	}
+
+	for i, filename := range additionalFiles {
+		content := fmt.Sprintf("test-content-%d", i+2)
+		fileBuf, err := packages_module.CreateHashedBufferFromReaderWithSize(
+			strings.NewReader(content), 1024,
+		)
+		assert.NoError(t, err)
+
+		_, err = packages_service.AddFileToPackageVersionInternal(t.Context(), pv, &packages_service.PackageFileCreationInfo{
+			PackageFileInfo: packages_service.PackageFileInfo{
+				Filename: filename,
+			},
+			Data:   fileBuf,
+			IsLead: false,
+		})
+		assert.NoError(t, err)
+		fileBuf.Close()
+	}
+
+	return pv
+}
+
 func addMavenMetadataToPackageVersion(t *testing.T, pv *packages.PackageVersion) {
-	// Create maven-metadata.xml content with build number 5 (matching the fixtures)
-	// Maven metadata structure explanation:
-	// - <snapshot>: Contains the latest snapshot timestamp and build number
-	// - <snapshotVersions>: Lists all available files for each build number
-	//   - <extension>: File extension (jar, pom, etc.)
-	//   - <classifier>: Optional classifier (sources, javadoc, tests, etc.)
-	//   - <value>: The actual version string with timestamp and build number
-	//   - <updated>: Timestamp when the artifact was deployed
+	t.Helper()
+
 	metadataXML := `<?xml version="1.0" encoding="UTF-8"?>
 <metadata>
   <groupId>com.gitea</groupId>
@@ -106,19 +178,16 @@ func addMavenMetadataToPackageVersion(t *testing.T, pv *packages.PackageVersion)
   </versioning>
 </metadata>`
 
-	// Add metadata file to the existing package version using service method
 	metadataReader := bytes.NewReader([]byte(metadataXML))
 	hsr, err := packages_module.CreateHashedBufferFromReader(metadataReader)
 	assert.NoError(t, err)
 
-	pfci := &packages_service.PackageFileCreationInfo{
+	_, err = packages_service.AddFileToPackageVersionInternal(t.Context(), pv, &packages_service.PackageFileCreationInfo{
 		PackageFileInfo: packages_service.PackageFileInfo{
 			Filename: "maven-metadata.xml",
 		},
 		Data: hsr,
-	}
-
-	_, err = packages_service.AddFileToPackageVersionInternal(t.Context(), pv, pfci)
+	})
 	assert.NoError(t, err)
 }
 
@@ -128,7 +197,6 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 	t.Run("Should skip when retainBuilds is negative", func(t *testing.T) {
 		setting.Packages.RetainMavenSnapshotBuilds = -1
 		setting.Packages.DebugMavenCleanup = false
-		t.Logf("Test settings: retainBuilds=%d, debug=%t", setting.Packages.RetainMavenSnapshotBuilds, setting.Packages.DebugMavenCleanup)
 		err := CleanupSnapshotVersions(t.Context())
 		assert.NoError(t, err)
 	})
@@ -136,7 +204,6 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 	t.Run("Should skip when retainBuilds is zero", func(t *testing.T) {
 		setting.Packages.RetainMavenSnapshotBuilds = 0
 		setting.Packages.DebugMavenCleanup = false
-		t.Logf("Test settings: retainBuilds=%d, debug=%t", setting.Packages.RetainMavenSnapshotBuilds, setting.Packages.DebugMavenCleanup)
 		err := CleanupSnapshotVersions(t.Context())
 		assert.NoError(t, err)
 	})
@@ -147,20 +214,16 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 		setting.Packages.RetainMavenSnapshotBuilds = 2
 		setting.Packages.DebugMavenCleanup = false
 
-		// Get the existing package version from fixtures (ID 1)
-		pv, err := packages.GetVersionByID(t.Context(), 1)
-		assert.NoError(t, err)
+		pv := createTestMavenSnapshotPackage(t)
 
-		// Verify all 11 files exist before cleanup (5 base jars + 6 classifier jars)
 		filesBefore, err := packages.GetFilesByVersionID(t.Context(), pv.ID)
 		assert.NoError(t, err)
-		assert.Len(t, filesBefore, 11) // 5 base jars + 6 classifier jars (sources + javadoc for builds 3,4,5)
+		assert.Len(t, filesBefore, 11)
 
-		// No metadata file exists in fixtures - should handle gracefully
+		// No metadata file — should handle gracefully
 		err = CleanupSnapshotVersions(t.Context())
 		assert.NoError(t, err)
 
-		// Verify all 11 files still exist after cleanup (no cleanup should occur without metadata)
 		filesAfter, err := packages.GetFilesByVersionID(t.Context(), pv.ID)
 		assert.NoError(t, err)
 		assert.Len(t, filesAfter, 11, "All files should remain when metadata is missing")
@@ -172,9 +235,7 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 		setting.Packages.RetainMavenSnapshotBuilds = 2
 		setting.Packages.DebugMavenCleanup = true
 
-		pv, err := packages.GetVersionByID(t.Context(), 1)
-		assert.NoError(t, err)
-
+		pv := createTestMavenSnapshotPackage(t)
 		addMavenMetadataToPackageVersion(t, pv)
 
 		filesBefore, err := packages.GetFilesByVersionID(t.Context(), pv.ID)
@@ -184,7 +245,6 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 		err = CleanupSnapshotVersions(t.Context())
 		assert.NoError(t, err)
 
-		// Verify all files still exist after cleanup (debug mode should not delete anything)
 		filesAfter, err := packages.GetFilesByVersionID(t.Context(), pv.ID)
 		assert.NoError(t, err)
 		assert.Len(t, filesAfter, 12, "All files should remain in debug mode")
@@ -195,11 +255,8 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 
 		setting.Packages.DebugMavenCleanup = false
 		setting.Packages.RetainMavenSnapshotBuilds = 2
-		t.Logf("Test settings: retainBuilds=%d, debug=%t", setting.Packages.RetainMavenSnapshotBuilds, setting.Packages.DebugMavenCleanup)
 
-		// Get the existing package version from fixtures (ID 1)
-		pv, err := packages.GetVersionByID(t.Context(), 1)
-		assert.NoError(t, err)
+		pv := createTestMavenSnapshotPackage(t)
 		assert.Equal(t, "1.0-SNAPSHOT", pv.Version)
 
 		addMavenMetadataToPackageVersion(t, pv)
@@ -218,10 +275,9 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 		filesAfter, err := packages.GetFilesByVersionID(t.Context(), pv.ID)
 		assert.NoError(t, err)
 
-		// Should have metadata file + 6 retained build artifacts (2 builds × 3 files each)
+		// Should have metadata file + 6 retained build artifacts (2 builds x 3 files each)
 		assert.Len(t, filesAfter, 7)
 
-		// Check that metadata file is still there
 		var hasMetadata bool
 		var retainedBuilds []string
 		for _, file := range filesAfter {
@@ -237,12 +293,10 @@ func TestCleanupSnapshotVersions(t *testing.T) {
 
 		t.Logf("Retained builds: %v", retainedBuilds)
 
-		// Verify build 4 artifacts are retained
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-4.jar")
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-4-sources.jar")
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-4-javadoc.jar")
 
-		// Verify build 5 artifacts are retained
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-5.jar")
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-5-sources.jar")
 		assert.Contains(t, retainedBuilds, "gitea-test-1.0-20230101.000000-5-javadoc.jar")
